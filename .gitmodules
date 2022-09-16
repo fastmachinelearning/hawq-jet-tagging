@@ -1,4 +1,4 @@
 [submodule "hawq"]
 	path = hawq
-	url = https://github.com/Zhen-Dong/HAWQ.git
+	url = https://github.com/Zhen-Dong/HAWQ
 	branch = main
