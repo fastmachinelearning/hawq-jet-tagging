@@ -14,7 +14,7 @@ class JetTaggingDataset(Dataset):
         Args:
             path (str): Path to dataset.
             features (list[str]): Load selected features from dataset.
-            preprocess (str): Standardize data.
+            preprocess (str): Standardize or normalize data.
 
         Raises:
             RuntimeError: If path is not a directory.
@@ -30,6 +30,9 @@ class JetTaggingDataset(Dataset):
         if preprocess == "standardize":
             scaler = preprocessing.StandardScaler().fit(self.data)
             self.data = scaler.transform(self.data)
+        elif preprocess == "normalize":
+            normalizer = preprocessing.Normalizer().fit(self.data)
+            self.data = normalizer.transform(self.data)
 
     def __len__(self):
         return len(self.data)
