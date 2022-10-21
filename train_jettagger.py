@@ -1,5 +1,7 @@
+import os
 import logging
 import argparse
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -7,7 +9,13 @@ import torch.optim
 import torch.utils.data
 from torch.optim.lr_scheduler import StepLR
 
+from hawq.utils.export import ExportManager
+
 from utils.train_utils import *
+from utils.plotting import make_plots, make_train_plot
+from utils.calc_bops import calc_hawq_bops
+from utils.neural_eff import calc_neural_efficieny
+
 
 parser = argparse.ArgumentParser(description="HAWQ Jet-Tagging")
 parser.add_argument("--data", metavar="DIR", help="Path to dataset.")
@@ -33,7 +41,7 @@ parser.add_argument(
     "--save-path",
     type=str,
     default="checkpoints/",
-    help="path to save the quantized model",
+    help="Path to save the quantized model.",
 )
 parser.add_argument(
     "-b",
@@ -41,7 +49,7 @@ parser.add_argument(
     default=1024,
     type=int,
     metavar="N",
-    help="Mini-batch size (default: 1024), this is the total.",
+    help="Mini-batch size (default: 1024).",
 )
 parser.add_argument(
     "-p",
@@ -54,7 +62,12 @@ parser.add_argument(
 parser.add_argument(
     "--batch-norm",
     action="store_true",
-    help="Implement MLP with batch normalization.",
+    help="Implement with batch normalization.",
+)
+parser.add_argument(
+    "--dropout",
+    action="store_true",
+    help="Train with dropout (Default=0.2).",
 )
 parser.add_argument(
     "--l1",
@@ -65,6 +78,19 @@ parser.add_argument(
     "--l2",
     action="store_true",
     help="Implement L2 regularization.",
+)
+parser.add_argument(
+    "--fp-model",
+    type=str,
+    required=False,
+    help="Path to pretrained floating point model for ROC Curves.",
+)
+parser.add_argument(
+    "--roc-precision",
+    default="6-bit",
+    type=str,
+    required=False,
+    help="Precision used in ROC legend.",
 )
 args = parser.parse_args()
 
@@ -80,7 +106,7 @@ def main():
     logging.info(model)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+    scheduler = StepLR(optimizer, step_size=75, gamma=0.1)
     criterion = nn.BCELoss()
 
     best_epoch = 0
@@ -107,6 +133,15 @@ def main():
 
         logging.info(f"Best acc at epoch {best_epoch+1}: {best_acc}")
         if is_best:
+            total_bops, percent_pruned = calc_hawq_bops(model, model.quant_act_1.activation_bit)
+            neural_efficiency = calc_neural_efficieny(model, val_loader, args)
+
+            log_training(
+                [best_acc, total_bops, percent_pruned, neural_efficiency],
+                "metrics.json",
+                args.save_path,
+            )
+            make_plots(model, val_loader, args)
             save_checkpoint(
                 {
                     "epoch": epoch + 1,
@@ -120,9 +155,18 @@ def main():
 
     log_training(loss_record, "model_loss.json", args.save_path)
     log_training(acc_record, "model_acc.json", args.save_path)
+    make_train_plot(args)
+    logging.info(args.save_path)
+    return model
 
 
-# python train_jettagger.py --epochs 5 --lr 0.01 --data /data1/jcampos/datasets --batch-size 1024 --save-path checkpoints  --config config/config_6bit.yml
 if __name__ == "__main__":
 
-    model = main()
+    hawq_model = main()
+
+    manager = ExportManager(hawq_model)
+    manager.export(
+        torch.randn([1, 16]),  # input for tracing
+        os.path.join(args.save_path, "hawq2qonnx_model.onnx"),
+    )
+    logging.info(f"Pre-scaling: {hawq_model.quant_input.act_scaling_factor}")

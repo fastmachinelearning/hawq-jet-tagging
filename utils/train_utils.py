@@ -15,9 +15,8 @@ from sklearn.metrics import accuracy_score
 from hawq.utils.quantization_utils.quant_modules import QuantAct, QuantLinear
 from hawq.utils.quantization_utils.quant_modules import freeze_model, unfreeze_model
 
-from models.three_layer import three_layer_mlp
-from models.q_three_layer import q_three_layer
-from models.q_three_layer_bn import q_three_layer_bn
+from models.three_layer import get_model
+from models.q_three_layer import get_quantized_model
 
 from .meters import AverageMeter, ProgressMeter
 from .jet_dataset import JetTaggingDataset
@@ -57,13 +56,13 @@ def setup_logger(args):
 def log_training(data, filename, save_path):
     try:
         path_to_file = os.path.join(save_path, filename)
-        with open(path_to_file, "a") as fp:
+        with open(path_to_file, "w") as fp:
             if type(data) == str:
                 fp.write(data)
             else:
                 json.dump(data, fp)
     except:
-        logging.error(f"Error while logging to file {path_to_file}")
+        logging.error(f"Error logging to file {path_to_file}")
 
 
 def save_checkpoint(state, is_best, filename=None):
@@ -98,7 +97,8 @@ def load_dataset(data_path, batch_size, config):
     train_loader = load_data(
         path=os.path.join(data_path, "train"),
         batch_size=batch_size,
-        data_percentage=0.75,
+        data_percentage=1,
+        shuffle=False,
         config=data_config,
     )
     val_loader = load_data(
@@ -134,7 +134,7 @@ def train(train_loader, model, criterion, optimizer, epoch, scheduler, args):
     batch_time = AverageMeter("Time", ":6.3f")
     data_time = AverageMeter("Data", ":6.3f")
     losses = AverageMeter("Loss", ":.4e")
-    accuracy = AverageMeter("Acc", ":6.2f")
+    accuracy = AverageMeter("Acc", ":6.6f")
     progress = ProgressMeter(
         len(train_loader),
         [batch_time, data_time, losses, accuracy],
@@ -153,7 +153,7 @@ def train(train_loader, model, criterion, optimizer, epoch, scheduler, args):
 
         loss = criterion(output, y_train.float())
         if args.l1:
-            loss += 0.000001 * l1_regualization(model)
+            loss += 0.0000001 * l1_regualization(model)
         if args.l2:
             loss += 0.01 * l2_regualization(model)
 
@@ -180,14 +180,15 @@ def train(train_loader, model, criterion, optimizer, epoch, scheduler, args):
         if i % args.print_freq == 0:
             progress.display(i)
 
-    scheduler.step()
+    if optimizer.param_groups[0]["lr"] > 0.00001:
+        scheduler.step()
     return losses.avg
 
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter("Time", ":6.3f")
     losses = AverageMeter("Loss", ":.4e")
-    accuracy = AverageMeter("Acc", ":6.2f")
+    accuracy = AverageMeter("Acc", ":6.6f")
     progress = ProgressMeter(
         len(val_loader), [batch_time, losses, accuracy], prefix="Test: "
     )
@@ -221,7 +222,7 @@ def validate(val_loader, model, criterion, args):
 
             if i % args.print_freq == 0:
                 progress.display(i)
-        logging.info(" * Acc {accuracy.avg:.3f}".format(accuracy=accuracy))
+        logging.info(" * Acc {accuracy.avg:.6f}".format(accuracy=accuracy))
 
     torch.save(
         {
@@ -286,14 +287,12 @@ def config_model(model, filename):
 # ------------------------------------------------------------
 # load and config model
 # ------------------------------------------------------------
-def load_model(args):
+def load_model(args, model=None):
     config = open_config(args.config)["model"]
     if config:
-        if args.batch_norm:
-            model = q_three_layer_bn()
-        else:
-            model = q_three_layer()
-        config_model(model, args.config)
-        return model
+        model = get_quantized_model(args)
     else:
-        return three_layer_mlp()
+        model = get_model(args)
+    # set bit width
+    config_model(model, args.config)
+    return model
