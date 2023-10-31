@@ -126,7 +126,7 @@ def main(args):
     # ------------------------
     if args.train or args.evaluate:
         if args.checkpoint or True:
-            checkpoint_file = os.path.join(args.saving_folder, args.experiment_name, f'net_{args.file_prefix}_best.pkl')
+            checkpoint_file = os.path.join(args.saving_folder, args.experiment_name, f'model_best.ckpt')
             print('Loading checkpoint...', checkpoint_file)
             checkpoint = torch.load(checkpoint_file)
             model.load_state_dict(checkpoint['state_dict'])
@@ -136,7 +136,7 @@ def main(args):
         data_module.setup("test")
         test_results = test_model(model, data_module.test_dataloader())
         test_results_log = os.path.join(
-            args.saving_folder, args.experiment_name, args.experiment_name + f"_emd_{args.file_prefix}.txt"
+            args.saving_folder, args.experiment_name, args.experiment_name + f"_emd.txt"
         )
         with open(test_results_log, "w") as f:
             f.write(str(test_results))
