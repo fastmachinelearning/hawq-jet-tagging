@@ -284,7 +284,7 @@ if __name__ == "__main__":
         trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
         # Load best checkpoint 
-        checkpoint_file = os.path.join(checkpoint_dir, experiment_name, 'resnet_best.ckpt')
+        checkpoint_file = os.path.join(checkpoint_dir, experiment_name, 'model_best.ckpt')
         print('Loading checkpoint:', checkpoint_file)
         model.load_state_dict(torch.load(checkpoint_file)['state_dict'])
 
