@@ -1,127 +1,147 @@
-import os
-import argparse
-import sys 
-sys.path.append("..")
-
+import sys
+sys.path.append('..')
+import math
+import logging
+import numpy as np
 import torch
 import torch.nn as nn
-
-from hawq.utils.export import ExportManager
-
-from models.three_layer import get_model
-from models.q_three_layer import QThreeLayer_BN, QThreeLayer, QThreeLayer_BNFold
-from utils.train_utils import config_model, validate, load_dataset
-
-from training.jet_tagging.config import *
+from hawq.utils.quantization_utils.quant_modules import QuantLinear
 
 
-parser = argparse.ArgumentParser(description="Load Checkpoints")
-parser.add_argument("--eval", action="store_true", help="Evaluate model.")
-parser.add_argument(
-    "--save-path",
-    type=str,
-    default="checkpoints/",
-    help="Path to save the quantized model.",
-)
-parser.add_argument(
-    "--batch-norm",
-    action="store_true",
-    help="Implement with batch normalization.",
-)
-# args.batch_norm_fold
-parser.add_argument(
-    "--batch-norm-fold",
-    action="store_true",
-    help="Implement with batch normalization.",
-)
-parser.add_argument(
-    "-p",
-    "--print-freq",
-    default=50,
-    type=int,
-    metavar="N",
-    help="Print frequency (default: 10)",
-)
-args = parser.parse_args()
+
+########################################################
+# Helper Funcs
+########################################################
+def countNonZeroWeights(model):
+    nonzero = total = 0
+    layer_count_alive = {}
+    layer_count_total = {}
+    for name, p in model.named_parameters():
+        tensor = p.data.cpu().numpy()
+        nz_count = np.count_nonzero(tensor)
+        total_params = np.prod(tensor.shape)
+        layer_count_alive.update({name: nz_count})
+        layer_count_total.update({name: total_params})
+        nonzero += nz_count
+        total += total_params
+        print(f"{name:20} | nonzeros = {nz_count:7} / {total_params:7} ({100 * nz_count / total_params:6.2f}%) | total_pruned = {total_params - nz_count :7} | shape = {tensor.shape}")
+    print(f"alive: {nonzero}, pruned : {total - nonzero}, total: {total}, Compression rate : {total/nonzero:10.2f}x  ({100 * (total-nonzero) / total:6.2f}% pruned)")
+    return nonzero, total, layer_count_alive, layer_count_total
 
 
-config_map = {
-    "w4a6": "../config/config_w4a6.yml",
-    "w5a7": "../config/config_w5a7.yml",
-    "w6a8": "../config/config_w6a8.yml",
-    "w7a9": "../config/config_w7a9.yml",
-    "w8a10": "../config/config_w8a10.yml",
-    "w4a7": "../config/config_w4a7.yml",
-    "w5a8": "../config/config_w5a8.yml",
-    "w6a9": "../config/config_w6a9.yml",
-    "w7a10": "../config/config_w7a10.yml",
-    "w8a11": "../config/config_w8a11.yml",
-    "test": "../config/config_mixed.yml",
-}
+def countNonZeroIntergerWeights(model):
+    nonzero = total = 0
+    layer_count_alive = {}
+    layer_count_total = {}
+    for name, p in model.named_buffers():
+        if "integer" not in name:
+            continue
+        tensor = p.data.cpu().numpy()
+        nz_count = np.count_nonzero(tensor)
+        total_params = np.prod(tensor.shape)
+        layer_count_alive.update({name: nz_count})
+        layer_count_total.update({name: total_params})
+        nonzero += nz_count
+        total += total_params
+        print(f"{name:20} | nonzeros = {nz_count:7} / {total_params:7} ({100 * nz_count / total_params:6.2f}%) | total_pruned = {total_params - nz_count :7} | shape = {tensor.shape}")
+    print(f"alive: {nonzero}, pruned : {total - nonzero}, total: {total}, Compression rate : {total/nonzero:10.2f}x  ({100 * (total-nonzero) / total:6.2f}% pruned)")
+    return nonzero, total, layer_count_alive, layer_count_total, (100 * (total - nonzero) / total)
 
 
-def get_quantized_model(args, model=None):
-    if model == None:
-        model = get_model(args)
-    if args.batch_norm_fold:
-        return QThreeLayer_BNFold(model)
-    if args.batch_norm:
-        return QThreeLayer_BN(model)
-    return QThreeLayer(model)
+class QModel(nn.Module):
+        def __init__(self, model) -> None:
+            super().__init__()
+
+            self.weight_precision = 8
+            self.activation_precision = 8
+
+            self.init_dense(model, "0", self.weight_precision)
+            self.init_dense(model, "2", self.weight_precision)
+            self.init_dense(model, "4", self.weight_precision)
+            self.init_dense(model, "6", self.weight_precision)
+        
+        def init_dense(self, module, name, bw):
+            layer = getattr(module, name)
+            quant_layer = QuantLinear(weight_bit=bw, bias_bit=bw)
+            quant_layer.set_param(layer)
+            setattr(self, name, quant_layer)
 
 
-def update_fc_scaling(model, state_dict):
-    # fc_scaling_factor saved as scalar tensor, model expects array
-    state_dict['dense_1.fc_scaling_factor'] = torch.ones(model.dense_1.fc_scaling_factor.shape)*state_dict['dense_1.fc_scaling_factor']
-    state_dict['dense_2.fc_scaling_factor'] = torch.ones(model.dense_2.fc_scaling_factor.shape)*state_dict['dense_2.fc_scaling_factor']
-    state_dict['dense_3.fc_scaling_factor'] = torch.ones(model.dense_3.fc_scaling_factor.shape)*state_dict['dense_3.fc_scaling_factor']
-    state_dict['dense_4.fc_scaling_factor'] = torch.ones(model.dense_4.fc_scaling_factor.shape)*state_dict['dense_4.fc_scaling_factor']
+########################################################
+# Compute BOPs
+########################################################
+def compute_bops(model):
+    # assume 32 bit precision 
+    b_w = 32
+    b_a = 32
+    alive, total, l_alive, l_total = countNonZeroWeights(model)
+    total_bops = 0
+
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            n = module.in_features
+            m = module.out_features
+        else:
+            continue
+        total = l_total[name + ".weight"] + l_total[name + ".bias"]
+        alive = l_alive[name + ".weight"] + l_alive[name + ".bias"]
+        p = 1 - ((total - alive) / total)  # fraction of layer remaining
+        
+        # assuming b_a is the output bitwidth of the last layer
+        # module_bops = m*n*p*(b_a*b_w + b_a + b_w + math.log2(n))
+        module_bops = m * n * (p * b_a * b_w + b_a + b_w + math.log2(n))
+        print("{} BOPS: {} = {}*{}*({}*{}*{} + {} + {} + {})".format(name, module_bops, m, n, p, b_a, b_w, b_a, b_w, math.log2(n)))
+
+        total_bops += module_bops
+    print("Total BOPS: {}".format(total_bops))
+    return total_bops
 
 
-def main():
+def computeBOPsHAWQ(model, input_data_precision=32):
+    last_bit_width = input_data_precision
+    alive, total, l_alive, l_total, pruned = countNonZeroIntergerWeights(model)
+    # assume same weight precision everywhere 
+    b_w = model.weight_precision if hasattr(model, "weight_precision") else 32  
+    total_bops = 0
 
-    model = get_quantized_model(args)
+    for name, module in model.named_modules():
+        b_a = last_bit_width
+        if isinstance(module, QuantLinear):
+            n = module.in_features
+            m = module.out_features
+        else:
+            continue 
 
-    # obtain list of all directories (bit configurations) 
-    config_dirs = os.listdir(checkpoint_dir)
+        total = l_total[name + ".weight_integer"] + l_total[name + ".bias_integer"]
+        alive = l_alive[name + ".weight_integer"] + l_alive[name + ".bias_integer"]
+        p = 1 - ((total - alive) / total)  # fraction of layer remaining
 
-    # find all non directories 
-    for dir in config_dirs:
-        if os.path.isdir(os.path.join(checkpoint_dir, dir)) is False:
-            print(f"Found file: {dir}")
+        # assuming b_a is the output bitwidth of the last layer
+        # module_bops = m*n*p*(b_a*b_w + b_a + b_w + math.log2(n))
+        module_bops = m * n * (p * b_a * b_w + b_a + b_w + math.log2(n))
+        print("{} BOPS: {} = {}*{}({}*{}*{} + {} + {} + {})".format(name, module_bops, m, n, p, b_a, b_w, b_a, b_w, math.log2(n)))
+        last_bit_width = b_w  
+        total_bops += module_bops
+    print("Total BOPS: {}".format(total_bops))
+    return total_bops, pruned
 
-    # find configuration
-    # set precision
-    config_model(model, config_dict['w4a7_w4a7_w4a7_w4a7'])
-
-    # load weights 
-    try:
-        checkpoint = torch.load(args.save_path, map_location=torch.device('cpu'))
-        state_dict = checkpoint['state_dict']
-
-        update_fc_scaling(model, state_dict)
-        model.load_state_dict(state_dict)
-        model.eval()
-    except:
-        raise Exception(f'Error encountered loading {args.save_path}')
-
-    # evaluate checkpoint 
-    if args.eval:
-        criterion = nn.BCELoss()
-        _, val_loader = load_dataset("../dataset", 1024, config_map['w4a6'])
-        acc = validate(val_loader, model, criterion, args)
-        print(f"Checkpoint Accuracy: {acc}")
-
-    print(model.quant_input.act_scaling_factor)
-    manager = ExportManager(model)
-    manager.export(
-       torch.randn([1, 16]),  # input for tracing
-       args.save_path.replace('model_best.pth.tar', 'hawq2qonnx_model_v2.onnx'),
-    )
 
 
 if __name__ == "__main__":
-    if os.path.isfile(args.save_path):
-        main()
-    else:
-        raise Exception(f"{args.save_path} is not a file.")
+    model = nn.Sequential(
+        nn.Linear(16, 64),
+        nn.ReLU(),
+        nn.Linear(64, 32),
+        nn.ReLU(),
+        nn.Linear(32, 32),
+        nn.ReLU(),
+        nn.Linear(32, 5),
+        nn.Softmax()
+    )
+
+    total_bops = compute_bops(model)
+    assert total_bops == 4652832, 'Error: Incorrect BOPs count for FP32 model'
+
+
+    qmodel = QModel(model)
+    total_bops = computeBOPsHAWQ(qmodel, 8)
