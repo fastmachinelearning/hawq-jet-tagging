@@ -7,7 +7,7 @@
 ENVIRONMENT_NAME="base"
 ENVIRONMENT_EXITS=$(conda env list | grep "$ENVIRONMENT_NAME" | wc -l)
 
-echo "ENVIRONMENT_EXITS: $ENVIRONMENT_EXITS"
+echo "CONDA ENVIRONMENT_EXITS: $ENVIRONMENT_EXITS"
 if [ "$ENVIRONMENT_EXITS" == "1" ]; then 
     conda activate base
 else 
@@ -36,6 +36,14 @@ get_dataset() {
     elif [ "$1" == "econ" ]; then 
         echo "econ"
         DIR="econ"
+    elif [ "help" == "help" ]; then 
+        echo "Usage: get_dataset DATASET_NAME" 
+        echo "Options:"
+        echo -e "\tjets: Classifying simulated jets of proton-proton colisions."
+        echo -e "\tecon: Data generated with the Level 1 Trigger Primitives simulation."
+        echo -e "\tic  : Image classification on CIFAR10."
+        echo -e "\tad  : Unsupervised detection of anomalous sounds."
+        return 0
     else
         echo "Error: unrecognized dataset $1"
     fi
@@ -60,9 +68,9 @@ train() {
         TASK="python train.py --train"
     elif [ "$1" == "ad" ]; then
         echo "Launching anomaly detection (ToyCar only)."
-        TASK="python $HAWQ_JET_TAGGING/training/anomaly_detection/train.py --dev"
+        TASK="python $HAWQ_JET_TAGGING/training/anomaly_detection/train.py"
     fi 
-    $task 
+    $TASK 
 }
 
 add_permissions()
