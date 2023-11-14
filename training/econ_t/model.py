@@ -1,10 +1,11 @@
 import os
-import sys
+import sys 
+sys.path.append('../..')
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 
-# from hawq.utils.quantization_utils.quant_modules import QuantAct, QuantLinear, QuantConv2d
+from hawq.utils.quantization_utils.quant_modules import QuantAct, QuantLinear, QuantConv2d
 from collections import OrderedDict
 from telescope_pt import telescopeMSE8x8, move_constants_to_gpu
 from autoencoder_datamodule import ARRANGE, ARRANGE_MASK
@@ -158,26 +159,22 @@ class BaseEncoder(nn.Module):
         return x
 
 class QuantizedEncoder(nn.Module):
-    def __init__(self, model, weight_precision, bias_precision, act_precision) -> None:
+    def __init__(self, model, precision) -> None:
         super().__init__()
 
-        self.weight_precision = weight_precision
-        self.bias_precision = bias_precision
-        self.act_precision = act_precision
-
-        self.quant_input = QuantAct(activation_bit=self.act_precision)
-        self.quant_relu = QuantAct(activation_bit=self.act_precision)
+        self.quant_input = QuantAct(activation_bit=16)
+        self.quant_relu = QuantAct(activation_bit=precision[0]+3)
         self.relu1 = nn.ReLU()
         self.relu2 = nn.ReLU()
         self.flatten = nn.Flatten()
 
         base_layer = getattr(model, 'conv')
-        hawq_layer = QuantConv2d(self.weight_precision, self.bias_precision)
+        hawq_layer = QuantConv2d(precision[0], precision[0])
         hawq_layer.set_param(base_layer)
         setattr(self, 'conv', hawq_layer)
 
         base_layer = getattr(model, 'enc_dense')
-        hawq_layer = QuantLinear(self.weight_precision, self.bias_precision)
+        hawq_layer = QuantLinear(precision[1], precision[1])
         hawq_layer.set_param(base_layer)
         setattr(self, 'enc_dense', hawq_layer)
     
@@ -206,7 +203,7 @@ class AutoEncoder(pl.LightningModule):
 
         self.encoder = BaseEncoder(econ_type) 
         if self.quantize:
-            self.encoder = QuantizedEncoder(self.encoder, precision[0], precision[1], precision[2])
+            self.encoder = QuantizedEncoder(self.encoder, precision=precision)
         
         self.decoder = nn.Sequential(OrderedDict([
             ("dec_dense", nn.Linear(self.encoded_dim, 128)),

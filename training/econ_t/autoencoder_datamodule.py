@@ -167,12 +167,18 @@ class AutoEncoderDataModule(pl.LightningDataModule):
     @staticmethod
     def add_argparse_args(parent_parser):
         parser = parent_parser.add_argument_group("Dataset")
-        parser.add_argument("--data_dir", type=str, default=None)
+        parser.add_argument("--data_dir", 
+                            type=str, 
+                            default=os.path.join(
+                                os.environ["HAWQ_JET_TAGGING"],
+                                "data/econ/raw"
+                            )
+        )
         parser.add_argument("--data_file", 
                             type=str, 
                             default= os.path.join(
                                 os.environ["HAWQ_JET_TAGGING"], 
-                                "data/econ/hgcal22data_signal_driven_ttbar_v11_nELinks5.npy"
+                                "data/econ/preprocess/hgcal22data_signal_driven_ttbar_v11_nELinks5.npy"
                             )
         )
         parser.add_argument("--num_workers", type=int, default=8)

@@ -42,24 +42,24 @@ class WarmUpLR(_LRScheduler):
 ####################################################
 # Base Quantized Model 
 ####################################################
-class BaseModel(nn.Module):
+class BaseQModel(nn.Module):
     def __init__(self, weight_precision, bias_precision):
         super().__init__()
         self.weight_precision = weight_precision
         self.bias_precision = bias_precision
 
-    def init_dense(self, model, name):
+    def init_dense(self, model, name, w_b):
         layer = getattr(model, name)
         quant_layer = QuantLinear(
-            weight_bit=self.weight_precision, bias_bit=self.bias_precision
+            weight_bit=w_b, bias_bit=w_b
         )
         quant_layer.set_param(layer)
         setattr(self, name, quant_layer)
     
-    def init_conv2d(self, model, name):
+    def init_conv2d(self, model, name, w_b):
         layer = getattr(model, name)
         quant_layer = QuantConv2d(
-            weight_bit=self.weight_precision, bias_bit=self.bias_precision
+            weight_bit=w_b, bias_bit=w_b
         )
         quant_layer.set_param(layer)
         setattr(self, name, quant_layer)
@@ -73,7 +73,11 @@ class BaseModel(nn.Module):
         bn_layer.momentum = momentum
         quant_layer.set_param(fc_layer, bn_layer)
         setattr(self, fc_name, quant_layer)
-
+    
+    def encodeBitwidths(self, precision, layers):
+        self.map_bitwidth = {}
+        for bitwidth, layer in zip(precision, layers):
+            self.map_bitwidth[layer] = bitwidth
 
 
 ####################################################
@@ -162,7 +166,7 @@ class ResNet(nn.Module):
 ####################################################
 # Quantized ResNet Model 
 ####################################################
-class QResNet(BaseModel):
+class QResNet(BaseQModel):
     def __init__(self, model, weight_precision, bias_precision, act_precision=8) -> None:
         super().__init__(weight_precision, bias_precision)
 
@@ -352,6 +356,69 @@ class MLPerfTinyRN08(nn.Module):
         x = self.softmax(self.fc(x))
         return x
 
+####################################################
+# Quantized MLPerf Tiny 1.0 RN08
+####################################################
+class QMLPerfTinyRN08(BaseQModel):
+    def __init__(self, model, precision) -> None:
+        super().__init__(weight_precision=4, bias_precision=4)
+        self.layers = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'fc']
+        self.encodeBitwidths(precision=precision, layers=self.layers)
+
+        self.quant_input = QuantAct(16)
+        self.init_conv2d(model, "conv1", self.map_bitwidth['conv1'])
+        self.bn1 = nn.BatchNorm2d(32)
+        self.q_relu_1 = QuantAct(self.map_bitwidth['conv1']+3)
+        
+        self.init_conv2d(model, "conv2", self.map_bitwidth['conv2'])
+        self.bn2 = nn.BatchNorm2d(4)
+        self.q_relu_2 = QuantAct(self.map_bitwidth['conv2']+3)
+        
+        self.init_conv2d(model, "conv3", self.map_bitwidth['conv3'])
+        self.bn3 = nn.BatchNorm2d(32)
+        self.q_relu_3 = QuantAct(self.map_bitwidth['conv3']+3)
+
+        self.init_conv2d(model, "conv4", self.map_bitwidth['conv4'])
+        self.bn4 = nn.BatchNorm2d(32)
+        self.q_relu_4 = QuantAct(self.map_bitwidth['conv4']+3)
+
+        self.init_conv2d(model, "conv5", self.map_bitwidth['conv5'])
+        self.bn5 = nn.BatchNorm2d(32)
+        self.q_relu_5 = QuantAct(self.map_bitwidth['conv5']+3)
+
+        self.init_dense(model, "fc", self.map_bitwidth['fc'])
+        self.q_relu_6 = QuantAct(self.map_bitwidth['fc']+3)
+        
+        self.relu = nn.ReLU()
+        self.softmax = nn.Softmax()
+    
+    def forward(self, x):
+        x, p_sf = self.quant_input(x)
+
+        x, w_sf = self.conv1(x, p_sf)
+        x = self.relu(self.bn1(x))
+        x, p_sf = self.q_relu_1(x, p_sf, w_sf)
+
+        x, w_sf = self.conv2(x, p_sf)
+        x = self.relu(self.bn2(x))
+        x, p_sf = self.q_relu_2(x, p_sf, w_sf)
+
+        x, w_sf = self.conv3(x, p_sf)
+        x = self.relu(self.bn3(x))
+        x, p_sf = self.q_relu_3(x, p_sf, w_sf)
+
+        x, w_sf = self.conv4(x, p_sf)
+        x = self.relu(self.bn4(x))
+        x, p_sf = self.q_relu_4(x, p_sf, w_sf)
+
+        x, w_sf = self.conv5(x, p_sf)
+        x = self.relu(self.bn5(x))
+        x, p_sf = self.q_relu_5(x, p_sf, w_sf)
+
+        x = torch.flatten(x, 1)
+        x = self.fc(x, p_sf)
+        x = self.softmax(x)
+        return x
 
 ####################################################
 # MLCommons ResNet 
@@ -388,23 +455,22 @@ class Resnet8v1EEMBC(nn.Module):
 # RN08 PyTorch Lightning  
 ####################################################
 class RN08(pl.LightningModule):
-  def __init__(self, precision=[], lr=1e-3) -> None:
+  def __init__(self, precision=[], lr=1e-3, quantize=False) -> None:
     super().__init__()
 
     self.lr = lr
     self.loss = nn.CrossEntropyLoss()
     # self.model = ResNet()
     self.model = MLPerfTinyRN08()
+    if quantize:
+        print('Loading quantized model')
+        self.model = QMLPerfTinyRN08(self.model, precision)
     self.warmup_epochs = 0
     self.weight_decay = 1e-4
     self.lr_decay = 0.99
     self.validation_step_acc = []
     self.test_step_acc = []
     self.test_step_loss = []
-
-    if len(precision) != 0:
-       print('Loading quantized model')
-       self.model = QResNet(self.model, precision[0], precision[1], precision[2])
 
   def forward(self, x):
     return self.model(x)

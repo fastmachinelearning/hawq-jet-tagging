@@ -255,6 +255,7 @@ if __name__ == "__main__":
             input_shape=param['model']['input_dim'],
             precision=[],
             lr=1e-3,
+            quantize=True
         )
         torchinfo.summary(model, (2, 64))
 

@@ -38,11 +38,25 @@ from model import RN08
 from data import get_test_dataloader, get_training_dataloader
 
 
+def timeStamp():
+    # get date and time to save model
+    dt = datetime.datetime.today()
+    year = dt.year
+    month = dt.month
+    day = dt.day
+    hour = dt.hour
+    minute = dt.minute
+    second = dt.second
+    experiment_name = f"{month}.{day}.{year}-{hour}.{minute}.{second}"
+    return experiment_name
+
+
 def main(args):
     # ------------------------
     # 0 PREPARE EXPERIMENT
     # ------------------------
     start_time = time.time()
+    experiment_name = timeStamp()
 
     checkpoint_dir = f'{os.environ["HAWQ_JET_TAGGING"]}/checkpoints/ic'
     if not os.path.exists(checkpoint_dir):
@@ -70,9 +84,11 @@ def main(args):
     # ------------------------
     # 2 INIT LIGHTNING MODEL
     # ------------------------
+    precision = [8, 2, 6, 2, 8, 8]
     model = RN08(
-        precision=[],
+        precision=precision,
         lr=args.lr,
+        quantize=args.quantize,
     )
 
     torchinfo.summary(model, input_size=(1, 3, 32, 32))  # (B, C, H, W)
@@ -114,9 +130,11 @@ def main(args):
     # 5 EVALUTE MODEL
     # ------------------------
     if args.train or args.evaluate:
-        checkpoint_file = os.path.join(checkpoint_dir, experiment_name, 'resnet_best.ckpt')
-        print('Loading checkpoint:', checkpoint_file)
-        model.load_state_dict(torch.load(checkpoint_file)['state_dict'])
+        if args.checkpoint:
+            experiment_name = args.experiment_name
+            checkpoint_file = os.path.join(checkpoint_dir, experiment_name, 'resnet_best.ckpt')
+            print('Loading checkpoint:', checkpoint_file)
+            model.load_state_dict(torch.load(checkpoint_file)['state_dict'])
 
         metrics = trainer.test(model=model, dataloaders=test_dataloader)[0]
 
@@ -127,6 +145,8 @@ def main(args):
             f.write(f"Experiment: {experiment_name}\n")
             f.write(f"\tTest Loss: {metrics['test_loss']}\n")
             f.write(f"\tTest Acc: {metrics['test_acc']}\n")
+            f.write(f"\tQuantize: {args.quantize}\n")
+            f.write(f"\t\tBitwidths: {precision}\n")
             f.write(f"\tExecution Time (s): {elapsed_time}\n")
             f.close()
 
@@ -137,9 +157,21 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--train", action="store_true", default=False)
     parser.add_argument("--evaluate", action="store_true", default=False)
-    # todo: require a 'checkpoint' option when evaluating 
+    parser.add_argument("--quantize", action="store_true", default=False)
+    parser.add_argument("--checkpoint", action="store_true", default=False)
+    parser.add_argument("--experiment_name", type=str, default="")
     parser.add_argument(
         "--accelerator", type=str, choices=["cpu", "gpu", "auto"], default="auto"
     )
     args = parser.parse_args()
     main(args)
+
+
+
+"""_summary_
+Train:
+    python train.py --train 
+    python train.py --train --quantize 
+Eval:
+    python train.py --evaluate --quantize --checkpoint --experiment_name 11.14.2023-1.44.55 
+"""

@@ -15,16 +15,19 @@ from model import AutoEncoder
 from autoencoder_datamodule import AutoEncoderDataModule
 from utils_pt import unnormalize, emd
 
-# get date and time to save model
-dt = datetime.datetime.today()
-year = dt.year
-month = dt.month
-day = dt.day
-hour = dt.hour
-minute = dt.minute
-second = dt.second
 
-experiment_name = f"{month}.{day}.{year}-{hour}.{minute}.{second}"
+def timeStamp():
+    # get date and time to save model
+    dt = datetime.datetime.today()
+    year = dt.year
+    month = dt.month
+    day = dt.day
+    hour = dt.hour
+    minute = dt.minute
+    second = dt.second
+    experiment_name = f"{month}.{day}.{year}-{hour}.{minute}.{second}"
+    return experiment_name
+
 
 def test_model(model, test_loader):
     """
@@ -60,6 +63,9 @@ def test_model(model, test_loader):
 
 
 def main(args):
+    start_time = time.time()
+    experiment_name = timeStamp()
+
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
     # ------------------------
@@ -74,13 +80,14 @@ def main(args):
     # ------------------------
     # 1 INIT LIGHTNING MODEL
     # ------------------------
+    precision = [6, 8]
     model = AutoEncoder(
         accelerator=args.accelerator, 
         quantize=args.quantize,
         precision=[
-            32, 
-            32, 
-            32
+            args.bitwidth, 
+            args.bitwidth, 
+            args.bitwidth+3
         ],
         learning_rate=1e-3,  # I DON'T LIKE TOO HARDCODED
         econ_type="baseline",  # I DON'T LIKE TOO HARDCODED
@@ -103,7 +110,7 @@ def main(args):
         filename='model_best',
         auto_insert_metric_name=False,
     )
-    print(f'Saving to dir: {os.path.join(args.save_dir, args.experiment_name)}')
+    print(f'Saving to dir: {os.path.join(args.save_dir, experiment_name)}')
 
     # ------------------------
     # 2 INIT TRAINER
@@ -125,8 +132,9 @@ def main(args):
     # 4 EVALUTE MODEL
     # ------------------------
     if args.train or args.evaluate:
-        if args.checkpoint or True:
-            checkpoint_file = os.path.join(args.saving_folder, args.experiment_name, f'model_best.ckpt')
+        if args.checkpoint:
+            experiment_name = args.experiment_name
+            checkpoint_file = os.path.join(args.save_dir, experiment_name, 'model_best.ckpt')
             print('Loading checkpoint...', checkpoint_file)
             checkpoint = torch.load(checkpoint_file)
             model.load_state_dict(checkpoint['state_dict'])
@@ -135,11 +143,17 @@ def main(args):
         model.set_val_sum(val_sum)
         data_module.setup("test")
         test_results = test_model(model, data_module.test_dataloader())
-        test_results_log = os.path.join(
-            args.saving_folder, args.experiment_name, args.experiment_name + f"_emd.txt"
-        )
-        with open(test_results_log, "w") as f:
-            f.write(str(test_results))
+        
+        elapsed_time = time.time() - start_time
+
+        with open(os.path.join(args.save_dir, "summary.txt"), "a") as f:
+            f.write("=====================================================\n")
+            f.write(f"Experiment: {experiment_name}\n")
+            f.write(f"\tTest score: {str(test_results)}\n")
+            f.write(f"\tQuantize: {args.quantize}\n")
+            if args.quantize:
+                f.write(f"\tBitwidth: {args.bitwidth}\n")
+            f.write(f"\tExecution Time (s): {elapsed_time}\n")
             f.close()
 
 
@@ -156,11 +170,12 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default="", help="model checkpoint")
     parser.add_argument("--train", action="store_true", default=False)
     parser.add_argument("--evaluate", action="store_true", default=False)
+    parser.add_argument("--bitwidth", type=int, default=32, help="quantize model to N-bit fixed point")
     parser.add_argument(
         "--quantize", 
         action="store_true", 
         default=False, 
-        help="quantize model to 6-bit fixed point (1 signed bit, 1 integer bit, 4 fractional bits)"
+        help="quantize model to N-bit fixed point"
     )
 
     # Add dataset-specific args
@@ -168,3 +183,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args)
+
+
+# ------------------------
+# train FP32 
+#       python train.py --train 
+# eval FP32
+#       python train.py --evaluate --experiment_name 10.31.2023-18.50.41
+# eval INT4
+#       python train.py --quantize --bitwidth 4 --evaluate --experiment_name 11.13.2023-8.34.11
+# ------------------------
