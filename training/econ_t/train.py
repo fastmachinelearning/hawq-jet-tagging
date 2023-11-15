@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import datetime
 from tqdm import tqdm
@@ -11,7 +12,7 @@ from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from argparse import ArgumentParser
-from model import AutoEncoder
+from pl_trainer import AutoEncoder
 from autoencoder_datamodule import AutoEncoderDataModule
 from utils_pt import unnormalize, emd
 
@@ -80,17 +81,12 @@ def main(args):
     # ------------------------
     # 1 INIT LIGHTNING MODEL
     # ------------------------
-    precision = [6, 8]
     model = AutoEncoder(
         accelerator=args.accelerator, 
         quantize=args.quantize,
-        precision=[
-            args.bitwidth, 
-            args.bitwidth, 
-            args.bitwidth+3
-        ],
-        learning_rate=1e-3,  # I DON'T LIKE TOO HARDCODED
-        econ_type="baseline",  # I DON'T LIKE TOO HARDCODED
+        precision=args.bitwidth,
+        learning_rate=1e-3,
+        econ_type="baseline",
     )
 
     torchinfo.summary(model, input_size=(1, 1, 8, 8))  # (B, C, H, W)
@@ -132,7 +128,7 @@ def main(args):
     # 4 EVALUTE MODEL
     # ------------------------
     if args.train or args.evaluate:
-        if args.checkpoint:
+        if args.experiment_name != "":
             experiment_name = args.experiment_name
             checkpoint_file = os.path.join(args.save_dir, experiment_name, 'model_best.ckpt')
             print('Loading checkpoint...', checkpoint_file)
@@ -160,36 +156,33 @@ def main(args):
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--process_data", action="store_true", default=False)
-    parser.add_argument("--max_epochs", type=int, default=10)
-    parser.add_argument("--save_dir", type=str, default="/data/jcampos/hawq-jet-tagging/checkpoints/econ")
-    parser.add_argument("--experiment_name", type=str, default="autoencoder")
+    parser.add_argument("--max_epochs", type=int, default=50)
+    parser.add_argument("--save_dir", type=str, default=os.path.join(os.environ["HAWQ_JET_TAGGING"], "checkpoints/econ"))
+    parser.add_argument("--experiment_name", type=str, default="")
     parser.add_argument("--fast_dev_run", action="store_true", default=False)
-    parser.add_argument(
-        "--accelerator", type=str, choices=["cpu", "gpu", "auto"], default="auto"
-    )
-    parser.add_argument("--checkpoint", type=str, default="", help="model checkpoint")
+    parser.add_argument("--accelerator", type=str, choices=["cpu", "gpu", "auto"], default="auto")
     parser.add_argument("--train", action="store_true", default=False)
     parser.add_argument("--evaluate", action="store_true", default=False)
-    parser.add_argument("--bitwidth", type=int, default=32, help="quantize model to N-bit fixed point")
-    parser.add_argument(
-        "--quantize", 
-        action="store_true", 
-        default=False, 
-        help="quantize model to N-bit fixed point"
-    )
+    parser.add_argument('--bitwidth', metavar='value', type=int, nargs='+', default=[], help='quantize model to N-bit fixed point')
+    parser.add_argument("--quantize", action="store_true", default=False, help="quantize model to N-bit fixed point")
 
     # Add dataset-specific args
     parser = AutoEncoderDataModule.add_argparse_args(parser)
-
     args = parser.parse_args()
+
+    if len(args.bitwidth) == 2:
+        args.quantize = True
+    elif len(args.bitwidth) != 0:
+        print(f"Error: Incorrect number of values {len(args.bitwidth)} passed.")
+        print("\tOption --bitwidth must be given integer values.")
+        sys.exit(1)
+
     main(args)
 
 
-# ------------------------
-# train FP32 
-#       python train.py --train 
-# eval FP32
-#       python train.py --evaluate --experiment_name 10.31.2023-18.50.41
-# eval INT4
-#       python train.py --quantize --bitwidth 4 --evaluate --experiment_name 11.13.2023-8.34.11
-# ------------------------
+"""
+    Train FP32: python train.py --train 
+    Train INT:  python train.py --train --bitwidth 4, 5
+    Eval FP32:  python train.py --evaluate --experiment_name 10.31.2023-18.50.41
+    Eval INT:   python train.py --evaluate --experiment_name 10.31.2023-18.50.41 --bitwidth 4, 5
+"""

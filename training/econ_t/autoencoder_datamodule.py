@@ -3,9 +3,9 @@ import torch
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
+from utils_pt import normalize
 from torch.utils.data import TensorDataset
 
-from utils_pt import normalize
 
 ARRANGE = torch.tensor(
     [
